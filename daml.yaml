@@ -5,6 +5,8 @@ init-script: Setup:initialize
 parties:
   - Alice
   - Bob
+  - Charlie
+  - Daniel
 version: 0.0.1
 dependencies:
   - daml-prim
