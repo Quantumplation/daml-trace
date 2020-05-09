@@ -1,0 +1,33 @@
+digraph G {
+compound=true;
+rankdir=LR;
+subgraph cluster_Contact{
+n0[label=Create][color=green]; 
+n1[label=Archive][color=red]; 
+n2[label=Inform][color=red]; 
+label=<<table align = "left" border="0" cellborder="0" cellspacing="1">
+<tr><td align="center"><b>Contact</b></td></tr><tr><td align="left">date</td></tr> 
+<tr><td align="left">duration.microseconds</td></tr> 
+<tr><td align="left">parties</td></tr> 
+</table>>;color=blue
+}subgraph cluster_Contact_Proposal{
+n3[label=Create][color=green]; 
+n4[label=Archive][color=red]; 
+n5[label=Agree][color=red]; 
+label=<<table align = "left" border="0" cellborder="0" cellspacing="1">
+<tr><td align="center"><b>Contact_Proposal</b></td></tr><tr><td align="left">contact.date</td></tr> 
+<tr><td align="left">contact.duration.microseconds</td></tr> 
+<tr><td align="left">contact.parties</td></tr> 
+<tr><td align="left">approved</td></tr> 
+</table>>;color=blue
+}subgraph cluster_Notification{
+n6[label=Create][color=green]; 
+n7[label=Archive][color=red]; 
+label=<<table align = "left" border="0" cellborder="0" cellspacing="1">
+<tr><td align="center"><b>Notification</b></td></tr><tr><td align="left">interested</td></tr> 
+</table>>;color=blue
+}n2->n6
+n5->n0
+n5->n3
+
+}
