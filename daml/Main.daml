@@ -1,39 +1,137 @@
--- Copyright (c) 2020 Digital Asset (Switzerland) GmbH and/or its affiliates. All rights reserved.
--- SPDX-License-Identifier: Apache-2.0
-
-
 module Main where
 
-type AssetId = ContractId Asset
+import DA.List
+import DA.Time
 
-template Asset
+template Contact
   with
-    issuer : Party
-    owner  : Party
-    name   : Text
+    date : Time
+    duration : RelTime
+    parties: [Party]
   where
-    ensure name /= ""
-    signatory issuer
-    controller owner can
-      Give : AssetId
-        with
-          newOwner : Party
-        do
-          create this with
-            owner = newOwner
+    signatory parties
+
+data ProposalResult = 
+  Finished (ContractId Contact)
+  | Pending (ContractId Contact_Proposal)
+
+template Contact_Proposal
+  with
+    contact : Contact
+    approved : [Party]
+  where
+    ensure all (`elem` contact.parties) approved
+    signatory approved
+    observer contact.parties
+    choice Accept : ProposalResult
+      with
+        approver : Party
+      controller approver
+      do
+        assert (approver `elem` contact.parties)
+        assert (approver `notElem` approved)
+        let new_approved = approver :: approved
+        if (sort contact.parties) == (sort new_approved) then
+          fmap Finished (create contact)
+        else
+          fmap Pending (create this with
+            approved = approver :: approved)
 
 setup = scenario do
   alice <- getParty "Alice"
   bob <- getParty "Bob"
+  charlie <- getParty "Charlie"
+  daniel <- getParty "Daniel"
 
-  aliceTV <- submit alice do
-    create Asset with
-      issuer = alice
-      owner = alice
-      name = "TV"
+  -- Cannot create a pre-approved contact_proposal
+  submitMustFail alice do
+    t <- getTime
+    create Contact_Proposal with
+      approved = [alice, bob]
+      contact = Contact with
+        date = t    
+        duration = minutes 5
+        parties = [alice, bob]
 
-  bobTV <- submit alice do
-    exercise aliceTV Give with newOwner = bob
+  -- Cannot create a contact_proposal for other people
+  submitMustFail alice do
+    t <- getTime
+    create Contact_Proposal with
+      approved = [bob]
+      contact = Contact with
+        date = t    
+        duration = minutes 5
+        parties = [bob, charlie]
 
-  submit bob do
-    exercise bobTV Give with newOwner = alice
+  -- Cannot create a contact_proposal approved for different parties
+  submitMustFail alice do
+    t <- getTime
+    create Contact_Proposal with
+      approved = [alice]
+      contact = Contact with
+        date = t    
+        duration = minutes 5
+        parties = [bob, charlie]
+
+  t <- getTime
+
+  let c = Contact with 
+            date = t
+            duration = minutes 5
+            parties = [alice, bob, charlie]
+
+  -- Can create a valid proposal
+  ct <- submit alice do
+    create Contact_Proposal with
+      approved = [alice]
+      contact = c
+
+  -- Alice, bob, and charlie should be able to see the proposal
+  submit alice (fetch ct)
+  submit bob (fetch ct)
+  submit charlie (fetch ct)
+  
+  -- Daniel can't
+  submitMustFail daniel (fetch ct)
+  
+  -- Cannot double-accept
+  submitMustFail alice do
+    exercise ct Accept with
+      approver = alice
+
+  -- Can accept if you haven't accepted before
+  ct2 <- submit bob do
+    exercise ct Accept with
+      approver = bob
+
+
+  case ct2 of
+    Pending p -> do
+      -- Cannot accept on behalf of someone else
+      submitMustFail alice do
+        exercise p Accept with
+          approver = charlie
+
+      ct3 <- submit charlie do
+        exercise p Accept with
+          approver = charlie
+
+      -- The final approval must have 
+      case ct3 of
+        Pending p -> assert False
+        Finished cfid -> do
+          -- Alice, bob, and charlie should be able to see the proposal
+          submit alice (fetch cfid)
+          submit bob (fetch cfid)
+          submit charlie (fetch cfid)
+          
+          -- Daniel can't
+          submitMustFail daniel (fetch cfid)
+
+          -- And the contact should be the one we proposed
+          submit alice do
+            cf <- fetch cfid
+            assert (cf == c)
+    Finished _ -> assert False
+
+  pure ()
