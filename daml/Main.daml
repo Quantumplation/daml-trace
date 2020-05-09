@@ -2,7 +2,37 @@ module Main where
 
 import DA.List
 import DA.Time
+import DA.Optional
+import qualified DA.Foldable as F
 
+-- This module attempts to build a rudimentary COVID-19 contact
+-- tracing aplication.  The workflow is as follows:
+--   + People who encounter eachother for some amount of time
+--     create a proposed contact.
+--   + Each person agrees, after which a Contact is created
+--   + If someone tests positive for COVID-19, they can 'inform'
+--     everyone, which creates a "Notification"
+--   + Anyone can query their own ID for a notification to see if
+--     any contacts have come up positive
+
+-- Some improvements that could be made:
+--   + Add a personalized threat model, so each person can control
+--     the threshold for duration that they're worried about
+--     ex: 1-minute durations might not be worrisome, but 3 hours is
+--     more concerning
+--   + Count how many positive tests among contacts, to give a confidence
+--   + Archive old contacts, past the incubation period
+--   + Allow testing authorities do the informing, so people aren't
+--     trolling 
+--   + Change the contact proposal model so that a contact still
+--     exists with the approving parties and gets updated, so that
+--     one person can't hold up the contact and avoid a positive signal
+
+-- Represents some duration of exposure to other people
+-- If one of these people tests positive for COVID-19,
+-- they can "inform" the rest
+-- We track date, so that we can only notify over the last 2 weeks
+-- and duration, so that we can extend this with a threat threshold model
 template Contact
   with
     date : Time
@@ -10,11 +40,32 @@ template Contact
     parties: [Party]
   where
     signatory parties
+    choice Inform : () -- Let these people know they might have COVID-19
+      with
+        informant : Party
+      controller informant -- I wish there was a "oneof" keyword
+      do
+        assert (informant `elem` parties)
+        F.mapA_ inform parties
 
+        
+inform : Party -> Update (ContractId Notification)
+inform p = do
+  lookup <- lookupByKey p
+  case lookup of
+    Some id -> return id
+    None -> create Notification with interested = p
+
+-- Each time someone agrees to a proposal,
+-- we're either finished, in which case we commit the contact
+-- or we have more approvals needed, so we wait
 data ProposalResult = 
   Finished (ContractId Contact)
   | Pending (ContractId Contact_Proposal)
 
+-- Because we want to make sure all contacts agree that
+-- the contact took place, we first propose, and get everyone
+-- to sign off
 template Contact_Proposal
   with
     contact : Contact
@@ -23,7 +74,7 @@ template Contact_Proposal
     ensure all (`elem` contact.parties) approved
     signatory approved
     observer contact.parties
-    choice Accept : ProposalResult
+    choice Agree : ProposalResult
       with
         approver : Party
       controller approver
@@ -37,7 +88,19 @@ template Contact_Proposal
           fmap Pending (create this with
             approved = approver :: approved)
 
-setup = scenario do
+-- This token allows you to query to see if anyone
+-- you've been in contact with has tested positive for
+-- COVID-19
+template Notification
+  with
+    interested : Party
+  where
+    signatory interested
+    key interested : Party
+    maintainer key
+
+-- Some basic testing around the workflow and visibility
+contactTracing = scenario do
   alice <- getParty "Alice"
   bob <- getParty "Bob"
   charlie <- getParty "Charlie"
@@ -86,6 +149,18 @@ setup = scenario do
       approved = [alice]
       contact = c
 
+  pass $ minutes 20
+
+  t2 <- getTime
+
+  cd <- submit daniel do
+    create Contact_Proposal with
+      approved = [daniel]
+      contact = Contact with
+        date = t2
+        duration = minutes 3
+        parties = [daniel, bob, alice]
+
   -- Alice, bob, and charlie should be able to see the proposal
   submit alice (fetch ct)
   submit bob (fetch ct)
@@ -96,12 +171,12 @@ setup = scenario do
   
   -- Cannot double-accept
   submitMustFail alice do
-    exercise ct Accept with
+    exercise ct Agree with
       approver = alice
 
   -- Can accept if you haven't accepted before
   ct2 <- submit bob do
-    exercise ct Accept with
+    exercise ct Agree with
       approver = bob
 
 
@@ -109,29 +184,54 @@ setup = scenario do
     Pending p -> do
       -- Cannot accept on behalf of someone else
       submitMustFail alice do
-        exercise p Accept with
+        exercise p Agree with
           approver = charlie
 
       ct3 <- submit charlie do
-        exercise p Accept with
+        exercise p Agree with
           approver = charlie
 
       -- The final approval must have 
       case ct3 of
         Pending p -> assert False
         Finished cfid -> do
-          -- Alice, bob, and charlie should be able to see the proposal
-          submit alice (fetch cfid)
+          -- Alice, bob, and charlie should be able to see the contact
+          cf <- submit alice (fetch cfid)
           submit bob (fetch cfid)
           submit charlie (fetch cfid)
           
-          -- Daniel can't
+          -- Daniel can't see or interact with the contact
           submitMustFail daniel (fetch cfid)
+          submitMustFail daniel do
+            exercise cfid Inform with
+              informant = daniel
+          submitMustFail daniel do
+            exercise cfid Inform with
+              informant = bob
 
           -- And the contact should be the one we proposed
-          submit alice do
-            cf <- fetch cfid
-            assert (cf == c)
+          assert (cf == c)
+          
+          -- One of the members should be able to report that
+          -- they might have COVID-19
+          submit bob do
+            exercise cfid Inform with
+              informant = bob
+          -- And everyone else should be able to check if
+          -- they have a notification
+          na <- submit alice (lookupByKey alice : Update (Optional (ContractId Notification)))
+          assert (isSome na)
+          nb <- submit bob (lookupByKey bob : Update (Optional (ContractId Notification)))
+          assert (isSome nb)
+          nc <- submit charlie (lookupByKey charlie : Update (Optional (ContractId Notification)))
+          assert (isSome nc)
+          -- And daniel doesn't
+          nd <- submit daniel (lookupByKey daniel : Update (Optional ( ContractId Notification)))
+          assert (isNone nd)
+          -- And people can't see other peoples notifications,
+          -- whether they've been in contact or not
+          submitMustFail alice (lookupByKey bob : Update (Optional (ContractId Notification)))
+          submitMustFail daniel (lookupByKey bob : Update (Optional (ContractId Notification)))
     Finished _ -> assert False
 
   pure ()
